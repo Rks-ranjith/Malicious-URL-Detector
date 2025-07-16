@@ -37,8 +37,8 @@ A **Streamlit web app** that detects **malicious URLs** using a trained machine 
 
 **Clone the repository:**
 ```bash
-**git clone https://github.com/Rks-ranjith/malicious-url-detector.git
-cd malicious-url-detector**
+git clone https://github.com/Rks-ranjith/malicious-url-detector.git
+cd malicious-url-detector
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
