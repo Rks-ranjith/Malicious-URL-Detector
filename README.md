@@ -7,8 +7,8 @@ A **Streamlit web app** that detects **malicious URLs** using a trained machine 
 
 ## 🚀 Live Demo
 
-👉 [Click here to try the app](https://rks-ranjith-malicious-url-detector.streamlit.app)  
-💻 [GitHub Repository](https://github.com/Rks-ranjith/malicious-url-detector)
+👉 [Click here to try the app](https://rks-malicious-url-detector.streamlit.app/)  
+💻 [GitHub Repository](https://github.com/Rks-ranjith/Malicious-URL-Detector)
 
 ---
 
