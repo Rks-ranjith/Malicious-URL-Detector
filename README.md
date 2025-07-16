@@ -40,7 +40,7 @@ A **Streamlit web app** that detects **malicious URLs** using a trained machine 
 git clone https://github.com/Rks-ranjith/malicious-url-detector.git
 cd malicious-url-detector
 
----
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 🧠 About the Model
 The machine learning model was trained on a labeled dataset containing URLs categorized as:
