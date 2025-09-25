@@ -262,7 +262,6 @@ if uploaded:
             status_text = st.empty()
 
             def progress_hook(frac, message=None):
-                # frac: 0.0 - 1.0
                 try:
                     progress_bar.progress(min(max(int(frac * 100), 0), 100))
                 except Exception:
@@ -270,18 +269,16 @@ if uploaded:
                 if message:
                     status_text.text(message)
 
-            # Call the fast bulk scanner with progress hook
             results = fast_bulk_scan(
                 urls,
                 model,
-                model_threshold=0.80,   # accept model predictions >= 80%
+                model_threshold=0.80,
                 vt_api_key=VT_API_KEY,
                 gsb_api_key=GSB_API_KEY,
                 vt_call_cap=200,
                 progress_callback=progress_hook
             )
 
-            # finalize UI progress
             progress_bar.progress(100)
             status_text.text("Completed")
 
@@ -293,19 +290,19 @@ if uploaded:
             else:
                 st.write("No results to show.")
 
-           # 📊 Summary chart (pie)
-if not results_df.empty and 'Final_Classification' in results_df.columns:
-    st.write("### Summary Chart")
-    summary_counts = results_df['Final_Classification'].value_counts().reset_index()
-    summary_counts.columns = ["Classification", "Count"]
-    fig = px.pie(
-        summary_counts,
-        names="Classification",
-        values="Count",
-        title="Final Classification Distribution",
-        hole=0.3
-    )
-    st.plotly_chart(fig, use_container_width=True)
+            # 📊 Summary chart (Plotly pie)
+            if not results_df.empty and 'Final_Classification' in results_df.columns:
+                st.write("### Summary Chart")
+                summary_counts = results_df['Final_Classification'].value_counts().reset_index()
+                summary_counts.columns = ["Classification", "Count"]
+                fig = px.pie(
+                    summary_counts,
+                    names="Classification",
+                    values="Count",
+                    title="Final Classification Distribution",
+                    hole=0.3
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
             st.write("### Detailed Results")
             st.dataframe(results_df)
@@ -316,5 +313,3 @@ if not results_df.empty and 'Final_Classification' in results_df.columns:
 
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
-
-
