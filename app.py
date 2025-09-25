@@ -293,15 +293,19 @@ if uploaded:
             else:
                 st.write("No results to show.")
 
-            # 📊 Summary chart (pie)
-            if not results_df.empty and 'Final_Classification' in results_df.columns:
-                # use matplotlib figure then show with plotly as before
-                st.write("### Summary Chart")
-                st.plotly_chart(
-                    results_df['Final_Classification'].value_counts().plot.pie(
-                        autopct='%1.1f%%', figsize=(5, 5), ylabel=""
-                    ).get_figure()
-                )
+           # 📊 Summary chart (pie)
+if not results_df.empty and 'Final_Classification' in results_df.columns:
+    st.write("### Summary Chart")
+    summary_counts = results_df['Final_Classification'].value_counts().reset_index()
+    summary_counts.columns = ["Classification", "Count"]
+    fig = px.pie(
+        summary_counts,
+        names="Classification",
+        values="Count",
+        title="Final Classification Distribution",
+        hole=0.3
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
             st.write("### Detailed Results")
             st.dataframe(results_df)
@@ -312,4 +316,5 @@ if uploaded:
 
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
+
 
