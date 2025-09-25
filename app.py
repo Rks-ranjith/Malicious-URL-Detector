@@ -7,6 +7,7 @@ import gdown
 import os
 import time
 import pandas as pd
+import plotly.express as px  
 
 # ------------------- Load Model -------------------
 model_path = "malicious_url_model.pkl"
@@ -292,8 +293,7 @@ if uploaded:
             else:
                 st.write("No results to show.")
 
-           import plotly.express as px  # add at the top if not already imported
-
+           
 # 📊 Summary chart (pie)
 if not results_df.empty and 'Final_Classification' in results_df.columns:
     st.write("### Summary Chart")
@@ -318,6 +318,7 @@ if not results_df.empty and 'Final_Classification' in results_df.columns:
 
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
+
 
 
 
