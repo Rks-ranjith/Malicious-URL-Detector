@@ -7,6 +7,7 @@ import gdown
 import os
 import time
 import pandas as pd
+import matplotlib
 
 # ------------------- Load Model -------------------
 model_path = "malicious_url_model.pkl"
@@ -311,3 +312,4 @@ if uploaded:
 
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
+
