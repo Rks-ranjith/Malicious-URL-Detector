@@ -70,6 +70,88 @@ def is_trusted_domain(url):
     domain = urlparse(url).netloc.lower()
     return any(trusted_domain == domain for trusted_domain in TRUSTED_DOMAINS)
 
+# ------------------- Fast Bulk Scan -------------------
+def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_key=None, vt_call_cap=None):
+    # Phase 1: ML-only pass
+    ml_rows = []
+    for url in urls:
+        try:
+            features = extract_features(url)
+            features.rename(columns={'url_length': 'url_len','shortining_service': 'Shortining_Service'}, inplace=True)
+            features = features[model.feature_names_in_]
+            proba = model.predict_proba(features)[0]
+            pred_idx = proba.argmax()
+            confidence = float(max(proba))  # 0-1
+            label = labels[pred_idx]
+            ml_rows.append({
+                "URL": url,
+                "ML_Prediction": label,
+                "ML_Confidence": confidence
+            })
+        except Exception as e:
+            ml_rows.append({"URL": url, "ML_Prediction": None, "ML_Confidence": 0.0, "Error": str(e)})
+
+    # Phase 2: Decide which need external checks
+    to_check = []
+    results = []
+    for r in ml_rows:
+        url = r["URL"]
+        conf = r.get("ML_Confidence", 0.0)
+        lbl = r.get("ML_Prediction")
+        if conf >= model_threshold:
+            results.append({
+                "URL": url,
+                "ML_Prediction": lbl,
+                "Confidence(%)": round(conf * 100, 2),
+                "Final_Classification": lbl,
+                "VirusTotal": "skipped (high-confidence)",
+                "SafeBrowsing": "skipped (high-confidence)"
+            })
+        else:
+            to_check.append((url, lbl, conf))
+
+    # Phase 3: External checks
+    vt_cache, gsb_cache = {}, {}
+    vt_calls = 0
+    for idx, (url, lbl, conf) in enumerate(to_check, start=1):
+        gsb_result, gsb_status = (None, "GSB disabled")
+        if gsb_api_key:
+            if url in gsb_cache:
+                gsb_result, gsb_status = gsb_cache[url]
+            else:
+                gsb_result, gsb_status = check_google_safe_browsing(gsb_api_key, url)
+                gsb_cache[url] = (gsb_result, gsb_status)
+
+        vt_result, vt_status = (None, "VT disabled")
+        if vt_api_key and (not gsb_result):
+            if vt_call_cap is None or vt_calls < vt_call_cap:
+                if url in vt_cache:
+                    vt_result, vt_status = vt_cache[url]
+                else:
+                    vt_result, vt_status = check_virustotal(vt_api_key, url)
+                    vt_cache[url] = (vt_result, vt_status)
+                    vt_calls += 1
+                    time.sleep(VT_DELAY_SEC)
+            else:
+                vt_status = "VT call cap reached"
+
+        if isinstance(vt_result, dict) and vt_result.get("positives", 0) > 0:
+            final = "Malicious (VirusTotal)"
+        elif gsb_result is True:
+            final = "Malicious (SafeBrowsing)"
+        else:
+            final = lbl if conf >= (MODEL_SUSPICION_THRESHOLD / 100.0) else "Needs Manual Review"
+
+        results.append({
+            "URL": url,
+            "ML_Prediction": lbl,
+            "Confidence(%)": round(conf * 100, 2),
+            "VirusTotal": vt_status,
+            "SafeBrowsing": gsb_status,
+            "Final_Classification": final
+        })
+    return results
+
 # ------------------- Streamlit UI -------------------
 st.set_page_config(page_title="Malicious URL Scanner", page_icon="🛡️")
 st.title("🛡️ Malicious URL Scanner")
@@ -133,55 +215,16 @@ if uploaded:
             st.error("CSV must contain a column named 'url'.")
         else:
             urls = df_in['url'].dropna().astype(str)
-            results = []
-            progress = st.progress(0)
 
-            for idx, url in enumerate(urls, start=1):
-                try:
-                    features = extract_features(url)
-                    features.rename(columns={'url_length': 'url_len','shortining_service': 'Shortining_Service'}, inplace=True)
-                    features = features[model.feature_names_in_]
-
-                    proba = model.predict_proba(features)[0]
-                    prediction = proba.argmax()
-                    confidence = float(max(proba))
-                    label = labels[prediction]
-
-                    vt_result, vt_status = (None, "VT disabled")
-                    if VT_API_KEY:
-                        vt_result, vt_status = check_virustotal(VT_API_KEY, url)
-                        time.sleep(VT_DELAY_SEC)
-
-                    gsb_result, gsb_status = (None, "GSB disabled")
-                    if GSB_API_KEY:
-                        gsb_result, gsb_status = check_google_safe_browsing(GSB_API_KEY, url)
-
-                    if isinstance(vt_result, dict) and vt_result.get("positives", 0) > 0:
-                        final = "Malicious (VirusTotal)"
-                    elif gsb_result is True:
-                        final = "Malicious (SafeBrowsing)"
-                    else:
-                        final = label if confidence >= MODEL_SUSPICION_THRESHOLD/100 else "Needs Manual Review"
-
-                    results.append({
-                        "URL": url,
-                        "ML_Prediction": label,
-                        "Confidence(%)": round(confidence * 100, 2),
-                        "VirusTotal": vt_status,
-                        "SafeBrowsing": gsb_status,
-                        "Final_Classification": final
-                    })
-                except Exception as e:
-                    results.append({
-                        "URL": url,
-                        "ML_Prediction": None,
-                        "Confidence(%)": None,
-                        "VirusTotal": None,
-                        "SafeBrowsing": None,
-                        "Final_Classification": f"Error: {e}"
-                    })
-
-                progress.progress(int(idx / len(urls) * 100))
+            # ✅ Use fast_bulk_scan instead of manual loop
+            results = fast_bulk_scan(
+                urls,
+                model,
+                model_threshold=0.80,
+                vt_api_key=VT_API_KEY,
+                gsb_api_key=GSB_API_KEY,
+                vt_call_cap=100
+            )
 
             results_df = pd.DataFrame(results)
 
