@@ -4,3 +4,4 @@ joblib
 requests
 gdown
 scikit-learn
+plotly.express
