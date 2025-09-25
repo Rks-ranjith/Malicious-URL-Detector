@@ -7,7 +7,7 @@ import gdown
 import os
 import time
 import pandas as pd 
-import plotly.express as px 
+
 # ------------------- Load Model -------------------
 model_path = "malicious_url_model.pkl"
 gdrive_file_id = "1t71-8vQVZowK05KfeRO-JAjRNQQSV0aU"  # Replace this with your file id if needed
@@ -312,5 +312,6 @@ if uploaded:
 
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
+
 
 
