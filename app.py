@@ -19,7 +19,7 @@ if not os.path.exists(model_path):
 model = joblib.load(model_path)
 labels = ['Benign', 'Defacement', 'Phishing', 'Malware']
 
-# API Keys from secrets
+# API Keys from Streamlit secrets
 VT_API_KEY = st.secrets.get("VT_API_KEY", None)
 GSB_API_KEY = st.secrets.get("GSB_API_KEY", None)
 
@@ -61,7 +61,7 @@ def check_google_safe_browsing(api_key, url):
 
 # ------------------- Config -------------------
 MODEL_SUSPICION_THRESHOLD = 50.0  # % confidence threshold
-VT_DELAY_SEC = 15  # Throttle for free API (4 requests/min)
+VT_DELAY_SEC = 15  # Free VT API: 4 requests/minute
 
 TRUSTED_DOMAINS = ["google.com", "www.google.com", "youtube.com", "www.youtube.com",
                    "github.com", "www.github.com", "wikipedia.org", "www.wikipedia.org"]
@@ -101,7 +101,7 @@ if st.button("🔍 Scan URL"):
         if vt_threat or gsb_threat:
             st.warning("⚠️ Threat detected by external sources.")
             if prediction == 0:
-                label = "Phishing"  # default fallback if benign but threat flagged
+                label = "Phishing"
         else:
             if is_trusted_domain(url) and prediction != 0:
                 label = "Benign"
@@ -187,6 +187,14 @@ if uploaded:
 
             st.write("### Quick Summary")
             st.write(results_df['Final_Classification'].value_counts())
+
+            # 📊 Pie chart
+            st.write("### Summary Chart")
+            st.plotly_chart(
+                results_df['Final_Classification'].value_counts().plot.pie(
+                    autopct='%1.1f%%', figsize=(5,5), ylabel=""
+                ).get_figure()
+            )
 
             st.write("### Detailed Results")
             st.dataframe(results_df)
