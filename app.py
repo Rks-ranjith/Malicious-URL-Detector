@@ -70,34 +70,31 @@ def is_trusted_domain(url):
     domain = urlparse(url).netloc.lower()
     return any(trusted_domain == domain for trusted_domain in TRUSTED_DOMAINS)
 
-# ------------------- Fast Bulk Scan -------------------
-def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_key=None, vt_call_cap=None):
-    # Phase 1: ML-only pass
+# ------------------- Fast Bulk Scan with Progress -------------------
+def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_key=None, vt_call_cap=None, progress=None):
     ml_rows = []
-    for url in urls:
+    total = len(urls)
+
+    # Phase 1: ML-only pass
+    for idx, url in enumerate(urls, start=1):
         try:
             features = extract_features(url)
             features.rename(columns={'url_length': 'url_len','shortining_service': 'Shortining_Service'}, inplace=True)
             features = features[model.feature_names_in_]
             proba = model.predict_proba(features)[0]
             pred_idx = proba.argmax()
-            confidence = float(max(proba))  # 0-1
+            confidence = float(max(proba))
             label = labels[pred_idx]
-            ml_rows.append({
-                "URL": url,
-                "ML_Prediction": label,
-                "ML_Confidence": confidence
-            })
+            ml_rows.append({"URL": url, "ML_Prediction": label, "ML_Confidence": confidence})
         except Exception as e:
             ml_rows.append({"URL": url, "ML_Prediction": None, "ML_Confidence": 0.0, "Error": str(e)})
 
-    # Phase 2: Decide which need external checks
-    to_check = []
-    results = []
+        if progress:
+            progress.progress(int((idx / total) * 50))  # first 50% for ML pass
+
+    to_check, results = [], []
     for r in ml_rows:
-        url = r["URL"]
-        conf = r.get("ML_Confidence", 0.0)
-        lbl = r.get("ML_Prediction")
+        url, conf, lbl = r["URL"], r.get("ML_Confidence", 0.0), r.get("ML_Prediction")
         if conf >= model_threshold:
             results.append({
                 "URL": url,
@@ -110,28 +107,20 @@ def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_k
         else:
             to_check.append((url, lbl, conf))
 
-    # Phase 3: External checks
-    vt_cache, gsb_cache = {}, {}
-    vt_calls = 0
+    vt_cache, gsb_cache, vt_calls = {}, {}, 0
     for idx, (url, lbl, conf) in enumerate(to_check, start=1):
         gsb_result, gsb_status = (None, "GSB disabled")
         if gsb_api_key:
-            if url in gsb_cache:
-                gsb_result, gsb_status = gsb_cache[url]
-            else:
-                gsb_result, gsb_status = check_google_safe_browsing(gsb_api_key, url)
-                gsb_cache[url] = (gsb_result, gsb_status)
+            gsb_result, gsb_status = gsb_cache.get(url, check_google_safe_browsing(gsb_api_key, url))
+            gsb_cache[url] = (gsb_result, gsb_status)
 
         vt_result, vt_status = (None, "VT disabled")
-        if vt_api_key and (not gsb_result):
+        if vt_api_key and not gsb_result:
             if vt_call_cap is None or vt_calls < vt_call_cap:
-                if url in vt_cache:
-                    vt_result, vt_status = vt_cache[url]
-                else:
-                    vt_result, vt_status = check_virustotal(vt_api_key, url)
-                    vt_cache[url] = (vt_result, vt_status)
-                    vt_calls += 1
-                    time.sleep(VT_DELAY_SEC)
+                vt_result, vt_status = vt_cache.get(url, check_virustotal(vt_api_key, url))
+                vt_cache[url] = (vt_result, vt_status)
+                vt_calls += 1
+                time.sleep(VT_DELAY_SEC)
             else:
                 vt_status = "VT call cap reached"
 
@@ -150,6 +139,10 @@ def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_k
             "SafeBrowsing": gsb_status,
             "Final_Classification": final
         })
+
+        if progress:
+            progress.progress(50 + int((idx / len(to_check)) * 50))  # next 50% for external checks
+
     return results
 
 # ------------------- Streamlit UI -------------------
@@ -215,23 +208,22 @@ if uploaded:
             st.error("CSV must contain a column named 'url'.")
         else:
             urls = df_in['url'].dropna().astype(str)
+            progress = st.progress(0)
 
-            # ✅ Use fast_bulk_scan instead of manual loop
             results = fast_bulk_scan(
                 urls,
                 model,
                 model_threshold=0.80,
                 vt_api_key=VT_API_KEY,
                 gsb_api_key=GSB_API_KEY,
-                vt_call_cap=100
+                vt_call_cap=100,
+                progress=progress
             )
 
             results_df = pd.DataFrame(results)
-
             st.write("### Quick Summary")
             st.write(results_df['Final_Classification'].value_counts())
 
-            # 📊 Pie chart
             st.write("### Summary Chart")
             st.plotly_chart(
                 results_df['Final_Classification'].value_counts().plot.pie(
@@ -245,6 +237,5 @@ if uploaded:
             csv_bytes = results_df.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Download Detailed Report", csv_bytes,
                                "url_analysis_report.csv", "text/csv")
-
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
