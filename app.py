@@ -8,9 +8,9 @@ import os
 import time
 import pandas as pd
 
-# Load model from Google Drive if not present
+# ------------------- Load Model -------------------
 model_path = "malicious_url_model.pkl"
-gdrive_file_id = "1t71-8vQVZowK05KfeRO-JAjRNQQSV0aU"  # Replace this
+gdrive_file_id = "1t71-8vQVZowK05KfeRO-JAjRNQQSV0aU"  # Replace this with your file id if needed
 
 if not os.path.exists(model_path):
     url = f"https://drive.google.com/uc?id={gdrive_file_id}"
@@ -19,21 +19,24 @@ if not os.path.exists(model_path):
 model = joblib.load(model_path)
 labels = ['Benign', 'Defacement', 'Phishing', 'Malware']
 
-# API Keys from Streamlit secrets
+# ------------------- API Keys -------------------
 VT_API_KEY = st.secrets.get("VT_API_KEY", None)
 GSB_API_KEY = st.secrets.get("GSB_API_KEY", None)
 
 # ------------------- VirusTotal Check -------------------
 def check_virustotal(api_key, url):
     params = {'apikey': api_key, 'resource': url}
-    response = requests.post('https://www.virustotal.com/vtapi/v2/url/report', data=params)
+    try:
+        response = requests.post('https://www.virustotal.com/vtapi/v2/url/report', data=params, timeout=30)
+    except Exception as e:
+        return None, f"VirusTotal request failed: {e}"
     if response.status_code == 200:
         result = response.json()
         positives = result.get('positives', 0)
         total = result.get('total', 0)
         return result, f"{positives}/{total} engines flagged"
     else:
-        return None, "VirusTotal check failed"
+        return None, f"VirusTotal check failed (status {response.status_code})"
 
 # ------------------- Google Safe Browsing Check -------------------
 def check_google_safe_browsing(api_key, url):
@@ -48,7 +51,10 @@ def check_google_safe_browsing(api_key, url):
         }
     }
     params = {'key': api_key}
-    response = requests.post(api_url, params=params, json=payload)
+    try:
+        response = requests.post(api_url, params=params, json=payload, timeout=15)
+    except Exception as e:
+        return None, f"Safe Browsing request failed: {e}"
 
     if response.status_code == 200:
         result = response.json()
@@ -57,45 +63,69 @@ def check_google_safe_browsing(api_key, url):
         else:
             return False, "✅ No threats found"
     else:
-        return None, "❌ Safe Browsing check failed"
+        return None, f"❌ Safe Browsing check failed (status {response.status_code})"
 
 # ------------------- Config -------------------
-MODEL_SUSPICION_THRESHOLD = 50.0  # % confidence threshold
-VT_DELAY_SEC = 15  # Free VT API: 4 requests/minute
+MODEL_SUSPICION_THRESHOLD = 50.0  # % (used for display and final decision comparison)
+VT_DELAY_SEC = 15  # Free VT API: ~4 requests/minute; throttle to avoid rate-limits
 
-TRUSTED_DOMAINS = ["google.com", "www.google.com", "youtube.com", "www.youtube.com",
-                   "github.com", "www.github.com", "wikipedia.org", "www.wikipedia.org"]
+TRUSTED_DOMAINS = [
+    "google.com", "www.google.com", "youtube.com", "www.youtube.com",
+    "github.com", "www.github.com", "wikipedia.org", "www.wikipedia.org"
+]
 
 def is_trusted_domain(url):
-    domain = urlparse(url).netloc.lower()
-    return any(trusted_domain == domain for trusted_domain in TRUSTED_DOMAINS)
+    try:
+        domain = urlparse(url).netloc.lower()
+        return any(trusted_domain == domain for trusted_domain in TRUSTED_DOMAINS)
+    except Exception:
+        return False
 
-# ------------------- Fast Bulk Scan with Progress -------------------
-def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_key=None, vt_call_cap=None, progress=None):
+# ------------------- Fast Bulk Scanner -------------------
+def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_key=None, vt_call_cap=None, progress_callback=None):
+    """
+    urls: iterable of URL strings
+    model_threshold: float 0-1 threshold to accept model prediction without external checks
+    vt_api_key, gsb_api_key: API keys (or None to skip)
+    vt_call_cap: optional cap on number of VT calls
+    progress_callback: optional function(progress_fraction, message) to update UI (e.g., Streamlit progress)
+    """
+    urls = list(urls)
+    n = len(urls)
+    if n == 0:
+        return []
+
+    # Phase 1: ML-only pass (fast)
     ml_rows = []
-    total = len(urls)
-
-    # Phase 1: ML-only pass
-    for idx, url in enumerate(urls, start=1):
+    for i, url in enumerate(urls, start=1):
         try:
             features = extract_features(url)
-            features.rename(columns={'url_length': 'url_len','shortining_service': 'Shortining_Service'}, inplace=True)
+            features.rename(columns={'url_length': 'url_len', 'shortining_service': 'Shortining_Service'}, inplace=True)
             features = features[model.feature_names_in_]
             proba = model.predict_proba(features)[0]
             pred_idx = proba.argmax()
-            confidence = float(max(proba))
+            confidence = float(max(proba))  # 0-1
             label = labels[pred_idx]
-            ml_rows.append({"URL": url, "ML_Prediction": label, "ML_Confidence": confidence})
+            ml_rows.append({
+                "URL": url,
+                "ML_Prediction": label,
+                "ML_Confidence": confidence
+            })
         except Exception as e:
             ml_rows.append({"URL": url, "ML_Prediction": None, "ML_Confidence": 0.0, "Error": str(e)})
 
-        if progress:
-            progress.progress(int((idx / total) * 50))  # first 50% for ML pass
+        if progress_callback:
+            progress_callback(i / (n * 2), f"ML pass {i}/{n}")  # first half progress reserved for ML pass
 
-    to_check, results = [], []
+    # Phase 2: Decide which need external checks
+    to_check = []
+    results = []
     for r in ml_rows:
-        url, conf, lbl = r["URL"], r.get("ML_Confidence", 0.0), r.get("ML_Prediction")
+        url = r["URL"]
+        conf = r.get("ML_Confidence", 0.0)
+        lbl = r.get("ML_Prediction")
         if conf >= model_threshold:
+            # accept model's decision without external checks
             results.append({
                 "URL": url,
                 "ML_Prediction": lbl,
@@ -107,23 +137,41 @@ def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_k
         else:
             to_check.append((url, lbl, conf))
 
-    vt_cache, gsb_cache, vt_calls = {}, {}, 0
+    # Phase 3: External checks only for to_check set
+    vt_cache = {}
+    gsb_cache = {}
+    vt_calls = 0
+    m = len(to_check)
     for idx, (url, lbl, conf) in enumerate(to_check, start=1):
+        # update progress callback (second half)
+        if progress_callback:
+            progress_callback(0.5 + (idx / (m * 2)), f"External checks {idx}/{m}")
+
+        # GSB check
         gsb_result, gsb_status = (None, "GSB disabled")
         if gsb_api_key:
-            gsb_result, gsb_status = gsb_cache.get(url, check_google_safe_browsing(gsb_api_key, url))
-            gsb_cache[url] = (gsb_result, gsb_status)
+            if url in gsb_cache:
+                gsb_result, gsb_status = gsb_cache[url]
+            else:
+                gsb_result, gsb_status = check_google_safe_browsing(gsb_api_key, url)
+                gsb_cache[url] = (gsb_result, gsb_status)
 
+        # VirusTotal (only if GSB didn't flag)
         vt_result, vt_status = (None, "VT disabled")
-        if vt_api_key and not gsb_result:
+        if vt_api_key and (not gsb_result):
             if vt_call_cap is None or vt_calls < vt_call_cap:
-                vt_result, vt_status = vt_cache.get(url, check_virustotal(vt_api_key, url))
-                vt_cache[url] = (vt_result, vt_status)
-                vt_calls += 1
-                time.sleep(VT_DELAY_SEC)
+                if url in vt_cache:
+                    vt_result, vt_status = vt_cache[url]
+                else:
+                    vt_result, vt_status = check_virustotal(vt_api_key, url)
+                    vt_cache[url] = (vt_result, vt_status)
+                    vt_calls += 1
+                    # throttle
+                    time.sleep(VT_DELAY_SEC)
             else:
                 vt_status = "VT call cap reached"
 
+        # Combine logic
         if isinstance(vt_result, dict) and vt_result.get("positives", 0) > 0:
             final = "Malicious (VirusTotal)"
         elif gsb_result is True:
@@ -140,9 +188,7 @@ def fast_bulk_scan(urls, model, model_threshold=0.80, vt_api_key=None, gsb_api_k
             "Final_Classification": final
         })
 
-        if progress:
-            progress.progress(50 + int((idx / len(to_check)) * 50))  # next 50% for external checks
-
+    # combine and return
     return results
 
 # ------------------- Streamlit UI -------------------
@@ -164,38 +210,41 @@ if st.button("🔍 Scan URL"):
         gsb_threat = gsb_threat or False
         st.markdown(f"🔍 **Google Safe Browsing:** {gsb_status}")
 
-        features = extract_features(url)
-        features.rename(columns={'url_length': 'url_len','shortining_service': 'Shortining_Service'}, inplace=True)
-        features = features[model.feature_names_in_]
+        try:
+            features = extract_features(url)
+            features.rename(columns={'url_length': 'url_len','shortining_service': 'Shortining_Service'}, inplace=True)
+            features = features[model.feature_names_in_]
 
-        proba = model.predict_proba(features)[0]
-        prediction = proba.argmax()
-        confidence = max(proba) * 100
-        label = labels[prediction]
+            proba = model.predict_proba(features)[0]
+            prediction = proba.argmax()
+            confidence = max(proba) * 100
+            label = labels[prediction]
 
-        if vt_threat or gsb_threat:
-            st.warning("⚠️ Threat detected by external sources.")
-            if prediction == 0:
-                label = "Phishing"
-        else:
-            if is_trusted_domain(url) and prediction != 0:
-                label = "Benign"
-                st.success("Trusted domain marked safe.")
-            else:
+            if vt_threat or gsb_threat:
+                st.warning("⚠️ Threat detected by external sources.")
                 if prediction == 0:
-                    st.success("External sources found no threat -- URL appears safe.")
-                elif confidence >= MODEL_SUSPICION_THRESHOLD:
-                    st.info(f"⚠️ Model suspects **{label}** ({confidence:.2f}% confidence).")
+                    label = "Phishing"
+            else:
+                if is_trusted_domain(url) and prediction != 0:
+                    label = "Benign"
+                    st.success("Trusted domain marked safe.")
                 else:
-                    st.success(f"Model predicted **{label}** with low confidence ({confidence:.2f}%). Likely safe.")
+                    if prediction == 0:
+                        st.success("External sources found no threat -- URL appears safe.")
+                    elif confidence >= MODEL_SUSPICION_THRESHOLD:
+                        st.info(f"⚠️ Model suspects **{label}** ({confidence:.2f}% confidence).")
+                    else:
+                        st.success(f"Model predicted **{label}** with low confidence ({confidence:.2f}%). Likely safe.")
 
-        st.markdown(f"🧠 **Model Prediction:** {label}")
-        st.markdown(f"🔐 **Confidence:** {confidence:.2f}%")
+            st.markdown(f"🧠 **Model Prediction:** {label}")
+            st.markdown(f"🔐 **Confidence:** {confidence:.2f}%")
 
-        if label == 'Benign':
-            st.success("This URL appears safe.")
-        else:
-            st.error("This URL may be malicious. Avoid it.")
+            if label == 'Benign':
+                st.success("This URL appears safe.")
+            else:
+                st.error("This URL may be malicious. Avoid it.")
+        except Exception as e:
+            st.error(f"Single URL scan failed: {e}")
 
 # ========== BULK CSV UPLOAD ==========
 st.subheader("📂 Bulk CSV Analysis")
@@ -207,29 +256,51 @@ if uploaded:
         if 'url' not in df_in.columns:
             st.error("CSV must contain a column named 'url'.")
         else:
-            urls = df_in['url'].dropna().astype(str)
-            progress = st.progress(0)
+            urls = df_in['url'].dropna().astype(str).tolist()
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
+            def progress_hook(frac, message=None):
+                # frac: 0.0 - 1.0
+                try:
+                    progress_bar.progress(min(max(int(frac * 100), 0), 100))
+                except Exception:
+                    pass
+                if message:
+                    status_text.text(message)
+
+            # Call the fast bulk scanner with progress hook
             results = fast_bulk_scan(
                 urls,
                 model,
-                model_threshold=0.80,
+                model_threshold=0.80,   # accept model predictions >= 80%
                 vt_api_key=VT_API_KEY,
                 gsb_api_key=GSB_API_KEY,
-                vt_call_cap=100,
-                progress=progress
+                vt_call_cap=200,
+                progress_callback=progress_hook
             )
+
+            # finalize UI progress
+            progress_bar.progress(100)
+            status_text.text("Completed")
 
             results_df = pd.DataFrame(results)
-            st.write("### Quick Summary")
-            st.write(results_df['Final_Classification'].value_counts())
 
-            st.write("### Summary Chart")
-            st.plotly_chart(
-                results_df['Final_Classification'].value_counts().plot.pie(
-                    autopct='%1.1f%%', figsize=(5,5), ylabel=""
-                ).get_figure()
-            )
+            st.write("### Quick Summary")
+            if 'Final_Classification' in results_df.columns and not results_df.empty:
+                st.write(results_df['Final_Classification'].value_counts())
+            else:
+                st.write("No results to show.")
+
+            # 📊 Summary chart (pie)
+            if not results_df.empty and 'Final_Classification' in results_df.columns:
+                # use matplotlib figure then show with plotly as before
+                st.write("### Summary Chart")
+                st.plotly_chart(
+                    results_df['Final_Classification'].value_counts().plot.pie(
+                        autopct='%1.1f%%', figsize=(5, 5), ylabel=""
+                    ).get_figure()
+                )
 
             st.write("### Detailed Results")
             st.dataframe(results_df)
@@ -237,5 +308,6 @@ if uploaded:
             csv_bytes = results_df.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Download Detailed Report", csv_bytes,
                                "url_analysis_report.csv", "text/csv")
+
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
