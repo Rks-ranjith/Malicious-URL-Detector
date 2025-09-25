@@ -6,8 +6,7 @@ from urllib.parse import urlparse
 import gdown
 import os
 import time
-import pandas as pd
-import plotly.express as px  
+import pandas as pd 
 
 # ------------------- Load Model -------------------
 model_path = "malicious_url_model.pkl"
@@ -315,3 +314,4 @@ if uploaded:
 
     except Exception as e:
         st.error(f"Bulk scan failed: {e}")
+
