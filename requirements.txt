@@ -5,3 +5,4 @@ requests
 gdown
 scikit-learn
 plotly.express
+matplotlib
